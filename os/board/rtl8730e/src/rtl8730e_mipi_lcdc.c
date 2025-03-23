@@ -56,13 +56,13 @@ static void rtl8730e_lcd_init(void);
 static void rtl8730e_gpio_reset(void);
 static void rtl8730e_lcd_power_off(void);
 static void rtl8730e_lcd_power_on(void);
-static void rtl8730e_lcd_mode_switch(bool flag);
+static void rtl8730e_mipi_mode_switch(mipi_mode_t mode);
 static void rtl8730e_lcd_layer_enable(int layer, bool enable);
 static void rtl8730e_lcd_put_area(u8 *lcd_img_buffer, u32 x_start, u32 y_start, u32 x_end, u32 y_end);
 static void rtl8730e_enable_lcdc(void);
 static void rtl8730e_register_lcdc_isr(void);
 static void rtl8730e_control_backlight(u8 level);
-FAR void mipidsi_mode_switch(bool do_enable);
+FAR void mipi_mode_switch_to_video(bool do_enable);
 FAR void mipidsi_acpu_reg_clear(void);
 FAR struct mipi_dsi_host *amebasmart_mipi_dsi_host_initialize(struct lcd_data *config);
 FAR struct mipi_dsi_device *mipi_dsi_device_register(FAR struct mipi_dsi_host *host, FAR const char *name, int channel);
@@ -72,7 +72,7 @@ struct rtl8730e_lcdc_info_s g_rtl8730e_config_dev_s = {
 	.lcd_config = {
 		.init = rtl8730e_lcd_init,
 		.reset = rtl8730e_gpio_reset,
-		.lcd_mode_switch = rtl8730e_lcd_mode_switch,
+		.mipi_mode_switch = rtl8730e_mipi_mode_switch,
 		.lcd_enable = rtl8730e_enable_lcdc,
 		.lcd_layer_enable = rtl8730e_lcd_layer_enable,
 		.lcd_put_area = rtl8730e_lcd_put_area,
@@ -134,6 +134,10 @@ static void rtl8730e_lcd_init(void)
 static void rtl8730e_lcd_power_off(void)
 {
 	InterruptDis(lcdc_irq_info.num);
+	if (lcdc_nextframe == 1) {
+		lcdc_nextframe = 0;
+		sem_post(&g_next_frame_block);
+	}
 	GPIO_WriteBit(MIPI_GPIO_RESET_PIN, PIN_LOW);
 }
 static void rtl8730e_lcd_power_on(void)
@@ -152,15 +156,15 @@ static void rtl8730e_gpio_reset(void)
 	return;
 }
 
-static void rtl8730e_lcd_mode_switch(bool flag)
+static void rtl8730e_mipi_mode_switch(mipi_mode_t mode)
 {
-	if (flag == false) {
-		mipidsi_mode_switch(false);
+	if (mode == CMD_MODE) {
+		mipi_mode_switch_to_video(false);
 		MIPI_DSI_INT_Config(MIPI, DISABLE, ENABLE, FALSE);
-		DelayMs(20);
+		DelayMs(140);
 	} else {
 		MIPI_DSI_INT_Config(MIPI, DISABLE, DISABLE, FALSE);
-		mipidsi_mode_switch(true);
+		mipi_mode_switch_to_video(true);
 	}
 }
 
@@ -236,7 +240,6 @@ static void rtl8730e_enable_lcdc(void)
 {
 	LCDC_Cmd(pLCDC, ENABLE);
 	while (!LCDC_CheckLCDCReady(pLCDC)) ;
-	mipidsi_mode_switch(true);
 }
 
 void rtl8730e_mipidsi_underflowreset(void)
@@ -281,7 +284,7 @@ u32 rtl8730e_hv_isr(void *Data)
 			InterruptRegister((IRQ_FUN)rtl8730e_mipidsi_underflowreset, mipi_irq_info.num, (u32)mipi_irq_info.data, mipi_irq_info.priority);
 			InterruptEn(mipi_irq_info.num, mipi_irq_info.priority);
 			mipidsi_acpu_reg_clear();
-			mipidsi_mode_switch(false);
+			mipi_mode_switch_to_video(false);
 			MIPI_DSI_INT_Config(MIPI, ENABLE, ENABLE, ENABLE);
 		}
 	}
@@ -318,6 +321,7 @@ void rtl8730e_lcdc_initialize(void)
 	LcdcInitValues(config);
 	rtl8730e_lcd_init();
 	rtl8730e_enable_lcdc();
+	mipi_mode_switch_to_video(true);
 
 	if (lcddev_register(dev) < 0) {
 		lcddbg("ERROR: LCD driver register fail\n");
