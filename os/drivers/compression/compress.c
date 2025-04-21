@@ -23,10 +23,12 @@
 #include <tinyara/fs/fs.h>
 #include <tinyara/fs/ioctl.h>
 #include <tinyara/compression.h>
+#include <tinyara/binfmt/compression/compress_read.h>
 
 #include <errno.h>
 #include <debug.h>
 #include <assert.h>
+#include <stdio.h>
 
 /****************************************************************************
  * Function Prototypes
@@ -50,6 +52,12 @@ static const struct file_operations compress_fops = {
 	, 0                         /* poll */
 #endif
 };
+
+static struct file_decomp_data_s {
+	int fd;
+	struct s_header *compression_header;
+};
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -87,9 +95,12 @@ static ssize_t comp_write(FAR struct file *filep, FAR const char *buffer, size_t
 static int comp_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
 {
 	int ret = -ENOSYS;
+	unsigned int size;
+	off_t filelen;
 	struct compress_header *comp_info = (struct compress_header *)arg;
+	struct file_decomp_data_s *data;
 
-	if (comp_info == NULL && cmd != COMPIOC_GET_COMP_TYPE) {
+	if (comp_info == NULL && !((cmd == COMPIOC_GET_COMP_TYPE) || (cmd==COMPIOC_GET_COMP_HEADER) || (cmd ==COMPIOC_UNINIT))) {
 		return -EINVAL;
 	}
 	/* Handle built-in ioctl commands */
@@ -120,6 +131,36 @@ static int comp_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
 		if (ret == ENOMEM) {
 			bcmpdbg("Output buffer allocated is not sufficient\n");
 		}
+	case COMPIOC_INIT:
+		data = (struct file_decomp_data_s *)malloc(sizeof(struct file_decomp_data_s));
+		data->fd = open((char *)arg, "r");
+		filep->f_priv = data;
+		if (data->fd < 0) {
+			int errval = get_errno();
+			berr("Failed to open file ERROR = %d\n", errval);
+			return -errval;
+		}
+		ret = compress_init(data->fd, 0, &filelen);
+		break;
+	case COMPIOC_GET_COMP_HEADER:
+		data = filep->f_priv;
+		data->compression_header = get_compression_header();
+		ret = data->compression_header->binary_size;
+		break;
+	case COMPIOC_FILE_DECOMPRESS:
+		data = filep->f_priv;
+		size = compress_read(data->fd, 0, (uint8_t *)arg, data->compression_header->binary_size, 0);
+		lldbg("size after decompression %d \n",size);
+		ret = size;
+		break;
+	case COMPIOC_UNINIT:
+		compress_uninit();	
+		data = filep->f_priv;
+		free(data->compression_header);
+		free(data);
+		filep->f_priv = NULL;
+		ret = OK;
+		break;	
 	}
 	return ret;
 }
